@@ -134,7 +134,7 @@ def readConfig(forceRead=False):
                     config[c] = False
             #logger.info("Read new config: " + json.dumps(config, indent=4))
     except Exception as ex:
-        logger.warning("Problem reading monitor.config, type: %s, exception: %s", str(type(ex)), str(ex.args))
+        logger.warning("Problem reading bridge_monitor.config, type: %s, exception: %s", str(type(ex)), str(ex.args))
 
 def readConfigLoop():
     #logger.debug("readConfigLoop")
@@ -160,9 +160,7 @@ def readConfig(forceRead=False):
             global config
             with open(CONFIG_FILE, 'r') as f:
                 newConfig = json.load(f)
-                logger.info( "Read monitor.config")
                 config.update(newConfig)
-                logger.info("Config read")
             for c in config:
                 if c.lower in ("true", "t", "1"):
                     config[c] = True
@@ -217,7 +215,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
         #logger.debug("onMessage")
         try:
             msg = json.loads(message)
-            logger.info("Message received: %s", json.dumps(msg, indent=4))
+            #logger.info("Message received: %s", json.dumps(msg, indent=4))
         except Exception as ex:
             logger.warning("onmessage. Unable to load json, type: %s, exception: %s", str(type(ex)), str(ex.args))
             return
@@ -238,6 +236,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
                     b["active"] = True,
                     b["time"] = time.time()
                     found = True
+                    logger.info("Message from bridge: %s", msg["source"].split('/')[0])
                     break
             if not found:
                 bridges.append({
