@@ -235,16 +235,28 @@ class ClientWSProtocol(WebSocketClientProtocol):
                 if msg["source"] == b["name"]:
                     b["active"] = True,
                     b["time"] = time.time()
+                    if "version" in msg["body"]:
+                        b["version"] = msg["body"]["version"]
+                    else:
+                        b["version"] = "not reported"
+                    if "up_since" in msg["body"]:
+                        b["up_since"] = msg["body"]["up_since"]
+                    else:
+                        b["up_since"] =-1 
                     found = True
-                    logger.info("Message from bridge: %s", msg["source"].split('/')[0])
+                    logger.info("Message from bridge: %s. Version: %s. Up since: %s", msg["source"].split('/')[0], \
+                        b["version"], "not reported" if b["up_since"] == -1 else nicetime(b["up_since"])) 
                     break
             if not found:
                 bridges.append({
                     "name": msg["source"], 
                     "active": True,
-                    "time": time.time()
+                    "time": time.time(),
+                    "version": msg["body"]["version"] if "version" in msg["body"] else "not reported",
+                    "up_since": msg["body"]["up_since"] if "up_since" in msg["body"] else -1 
                 })
-                logger.info("New bridge: %s", msg["source"].split('/')[0])
+                logger.info("New bridge: %s. Version: %s. Up since: %s", msg["source"].split('/')[0], bridges[-1]["version"], \
+                    "not reported" if bridges[-1]["up_since"] == -1 else nicetime(bridges[-1]["up_since"]))
             ack = {
                     "source": config["cid"],
                     "destination": msg["source"],
