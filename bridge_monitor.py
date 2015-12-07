@@ -37,8 +37,9 @@ CB_LOGFILE            = HOME + "/bridge_monitor/monitor.log"
 CB_ADDRESS            = "portal.continuumbridge.com"
 CB_LOGGING_LEVEL      = "DEBUG"
 CONFIG_READ_INTERVAL  = 10.0
-WATCHDOG_TIME         = 60 * 61  # If not heard about a bridge for this time, consider it disconnected
-MONITOR_INTERVAL      = 30       # How often to run watchdog code
+WATCHDOG_TIME         = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
+BRIDGE_DEAD_TIME      = 60 * 60 * 4 # Presume dead if not back in this time. Must be greater than WATCHDOG_TIME
+MONITOR_INTERVAL      = 30          # How often to run watchdog code
  
 logger = logging.getLogger('Logger')
 logger.setLevel(CB_LOGGING_LEVEL)
@@ -243,9 +244,17 @@ class ClientWSProtocol(WebSocketClientProtocol):
                         b["up_since"] = msg["body"]["up_since"]
                     else:
                         b["up_since"] =-1 
+                    if "uptime" in msg["body"]:
+                        b["uptime"] = msg["body"]["uptime"]
+                    else:
+                        b["uptime"] = "not reported"
+                    if "connection" in msg["body"]:
+                        b["connection"] = msg["body"]["connection"]
+                    else:
+                        b["connection"] = "not reported"
                     found = True
-                    logger.info("Message from bridge: %s. Version: %s. Up since: %s", msg["source"].split('/')[0], \
-                        b["version"], "not reported" if b["up_since"] == -1 else nicetime(b["up_since"])) 
+                    logger.info("%s. %s. Apps up since: %s, uptime: %s, conn: %s", msg["source"].split('/')[0], \
+                        b["version"], "not reported" if b["up_since"] == -1 else nicetime(b["up_since"]), b["uptime"], b["connection"]) 
                     break
             if not found:
                 bridges.append({
@@ -255,7 +264,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
                     "version": msg["body"]["version"] if "version" in msg["body"] else "not reported",
                     "up_since": msg["body"]["up_since"] if "up_since" in msg["body"] else -1 
                 })
-                logger.info("New bridge: %s. Version: %s. Up since: %s", msg["source"].split('/')[0], bridges[-1]["version"], \
+                logger.info("New: %s. %s. Apps up since: %s", msg["source"].split('/')[0], bridges[-1]["version"], \
                     "not reported" if bridges[-1]["up_since"] == -1 else nicetime(bridges[-1]["up_since"]))
             ack = {
                     "source": config["cid"],
@@ -263,14 +272,22 @@ class ClientWSProtocol(WebSocketClientProtocol):
                     "body": {"command": "none"}
                   }
             #logger.debug("onMessage ack: %s", str(json.dumps(ack, indent=4)))
-            logger.info("Sent ack to %s", msg["source"].split('/')[0])
+            #logger.info("Sent ack to %s", msg["source"].split('/')[0])
             reactor.callInThread(self.sendAck, ack)
 
     def monitor(self):
         if bridges:
             now = time.time()
             for b in bridges:
-                if now - b["time"] > WATCHDOG_TIME:
+                if now - b["time"] > BRIDGE_DEAD_TIME:
+                    if b["active"] == False: # i.e. it's in bridges & hasn't come back or been marked dead yet.
+                        b["active"] = "dead"
+                        name =  b["name"].split('/')[0]
+                        logger.info("Marking %s. as dead", name)
+                        alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
+                        subject = name + " seems to be dead"
+                        reactor.callInThread(sendMail, config["email"], subject, alert)
+                elif now - b["time"] > WATCHDOG_TIME:
                     if b["active"]:
                         b["active"] = False
                         name =  b["name"].split('/')[0]
@@ -280,6 +297,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
 
 if __name__ == '__main__':
     readConfig(True)
+    logger.info("Read config. Connecting to portal")
     cbid, sessionID, ws_url = authorise()
     headers = {'sessionID': sessionID}
     factory = ClientWSFactory(ws_url, headers=headers, debug=False)
