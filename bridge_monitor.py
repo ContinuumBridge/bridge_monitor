@@ -29,17 +29,17 @@ from twisted.internet import reactor, defer
 from twisted.internet import task
 from twisted.internet.protocol import ReconnectingClientFactory
 
-config                = {}
-bridges               = []
-HOME                  = os.path.expanduser("~")
-CONFIG_FILE           = HOME + "/bridge_monitor/bridge_monitor.config"
-CB_LOGFILE            = HOME + "/bridge_monitor/monitor.log"
-CB_ADDRESS            = "portal.continuumbridge.com"
-CB_LOGGING_LEVEL      = "DEBUG"
-CONFIG_READ_INTERVAL  = 10.0
-WATCHDOG_TIME         = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
-BRIDGE_DEAD_TIME      = 60 * 60 * 4 # Presume dead if not back in this time. Must be greater than WATCHDOG_TIME
-MONITOR_INTERVAL      = 30          # How often to run watchdog code
+config                      = {}
+bridges                     = []
+HOME                        = os.path.expanduser("~")
+CONFIG_FILE                 = HOME + "/bridge_monitor/bridge_monitor.config"
+CB_LOGFILE                  = HOME + "/bridge_monitor/monitor.log"
+CB_ADDRESS                  = "portal.continuumbridge.com"
+CB_LOGGING_LEVEL            = "DEBUG"
+CONFIG_READ_INTERVAL        = 10.0
+WATCHDOG_TIME               = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
+BRIDGE_DEAD_TIME            = 60 * 60 * 4 # Presume dead if not back in this time. Must be greater than WATCHDOG_TIME
+MONITOR_INTERVAL            = 30          # How often to run watchdog code
  
 logger = logging.getLogger('Logger')
 logger.setLevel(CB_LOGGING_LEVEL)
@@ -180,6 +180,7 @@ class ClientWSFactory(ReconnectingClientFactory, WebSocketClientFactory):
 
     def clientConnectionLost(self, connector, reason):
         logger.debug('Lost connection. Reason: %s', reason)
+        self.connectionLostCount += 1
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
     def clientConnectionFailed(self, connector, reason):
@@ -192,6 +193,8 @@ class ClientWSProtocol(WebSocketClientProtocol):
         signal.signal(signal.SIGINT, self.signalHandler)  # For catching SIGINT
         signal.signal(signal.SIGTERM, self.signalHandler)  # For catching SIGTERM
         self.stopping = False
+        self.connectionLostCount = 0
+        self.failureNotified = False
         l = task.LoopingCall(self.monitor)
         l.start(MONITOR_INTERVAL)
 
@@ -208,6 +211,8 @@ class ClientWSProtocol(WebSocketClientProtocol):
 
     def onOpen(self):
         logger.debug("WebSocket connection open.")
+        self.connectionLostCount = 0
+        self.failureNotified = False
 
     def onClose(self, wasClean, code, reason):
         logger.debug("onClose, reason:: %s", reason)
@@ -286,14 +291,20 @@ class ClientWSProtocol(WebSocketClientProtocol):
                         logger.info("Marking %s. as dead", name)
                         alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
                         subject = name + " seems to be dead"
-                        reactor.callInThread(sendMail, config["email"], subject, alert)
+                        reactor.callInThread(sendMail, config["email1"], subject, alert)
                 elif now - b["time"] > WATCHDOG_TIME:
                     if b["active"]:
                         b["active"] = False
                         name =  b["name"].split('/')[0]
                         alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
                         subject = "Alert for Bridge " + name
-                        reactor.callInThread(sendMail, config["email"], subject, alert)
+                        reactor.callInThread(sendMail, config["email1"], subject, alert)
+        if self.connectionLostCount > 3 and not self.failureNotified:
+            logger.info("Connection to bridge controller appears to have failed")
+            alert = nicetime(time.time()) + ": production server appears to have failed"
+            subject = alert
+            reactor.callInThread(sendMail, config["email2"], subject, alert)
+            self.failureNotified = True
 
 if __name__ == '__main__':
     readConfig(True)
