@@ -20,7 +20,8 @@ case "$1" in
   start)
         echo -n "Starting bridge_monitor: "
         cd /home/ubuntu/bridge_monitor
-        su -l ubuntu -c "/home/ubuntu/bridge_monitor/bridge_monitor.py >> /home/ubuntu/bridge_monitor/shell.log 2>&1 &"
+        ./bridge_monitor.py >> '/home/ubuntu/bridge_monitor/shell.log' 2>&1 &
+        #su -l ubuntu -c "/home/ubuntu/bridge_monitor/bridge_monitor.py >> /home/ubuntu/bridge_monitor/shell.log 2>&1 &"
         #su -l ubuntu -c "/home/ubuntu/bridge_monitor/bridge_monitor >> /dev/null 2>&1 &"
         sch_pid=$!
         echo $sch_pid > $PIDFILE
