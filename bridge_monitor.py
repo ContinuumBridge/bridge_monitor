@@ -31,16 +31,17 @@ from twisted.internet.protocol import ReconnectingClientFactory
 
 config                      = {}
 bridges                     = []
-HOME                        = os.path.expanduser("~")
-CONFIG_FILE                 = HOME + "/bridge_monitor/bridge_monitor.config"
-CB_LOGFILE                  = HOME + "/bridge_monitor/monitor.log"
+connectionLostCount         = 0
+HOME                        = os.getcwd()
+CONFIG_FILE                 = HOME + "/bridge_monitor.config"
+CB_LOGFILE                  = HOME + "/monitor.log"
 CB_ADDRESS                  = "portal.continuumbridge.com"
 CB_LOGGING_LEVEL            = "DEBUG"
 CONFIG_READ_INTERVAL        = 10.0
 WATCHDOG_TIME               = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
 BRIDGE_DEAD_TIME            = 60 * 60 * 4 # Presume dead if not back in this time. Must be greater than WATCHDOG_TIME
 MONITOR_INTERVAL            = 30          # How often to run watchdog code
- 
+
 logger = logging.getLogger('Logger')
 logger.setLevel(CB_LOGGING_LEVEL)
 handler = logging.handlers.RotatingFileHandler(CB_LOGFILE, maxBytes=10000000, backupCount=5)
@@ -179,8 +180,9 @@ class ClientWSFactory(ReconnectingClientFactory, WebSocketClientFactory):
         ReconnectingClientFactory.resetDelay
 
     def clientConnectionLost(self, connector, reason):
+        global connectionLostCount
         logger.debug('Lost connection. Reason: %s', reason)
-        self.connectionLostCount += 1
+        connectionLostCount += 1
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
     def clientConnectionFailed(self, connector, reason):
@@ -188,13 +190,14 @@ class ClientWSFactory(ReconnectingClientFactory, WebSocketClientFactory):
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
 
 class ClientWSProtocol(WebSocketClientProtocol):
+    global connectionLostCount
     def __init__(self):
         logger.debug("Connection __init__")
         signal.signal(signal.SIGINT, self.signalHandler)  # For catching SIGINT
         signal.signal(signal.SIGTERM, self.signalHandler)  # For catching SIGTERM
         self.stopping = False
-        self.connectionLostCount = 0
-        self.failureNotified = False
+        connectionLostCount = 0
+        self.failureNotifiedTime = 0
         l = task.LoopingCall(self.monitor)
         l.start(MONITOR_INTERVAL)
 
@@ -208,11 +211,11 @@ class ClientWSProtocol(WebSocketClientProtocol):
 
     def onConnect(self, response):
         logger.debug("Server connected: %s", str(response.peer))
+        global connectionLostCount
+        connectionLostCount = 0
 
     def onOpen(self):
         logger.debug("WebSocket connection open.")
-        self.connectionLostCount = 0
-        self.failureNotified = False
 
     def onClose(self, wasClean, code, reason):
         logger.debug("onClose, reason:: %s", reason)
@@ -281,8 +284,8 @@ class ClientWSProtocol(WebSocketClientProtocol):
             reactor.callInThread(self.sendAck, ack)
 
     def monitor(self):
+        now = time.time()
         if bridges:
-            now = time.time()
             for b in bridges:
                 if now - b["time"] > BRIDGE_DEAD_TIME:
                     if b["active"] == False: # i.e. it's in bridges & hasn't come back or been marked dead yet.
@@ -299,12 +302,12 @@ class ClientWSProtocol(WebSocketClientProtocol):
                         alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
                         subject = "Alert for Bridge " + name
                         reactor.callInThread(sendMail, config["email1"], subject, alert)
-        if self.connectionLostCount > 3 and not self.failureNotified:
-            logger.info("Connection to bridge controller appears to have failed")
+        if connectionLostCount > 3 and not (now - self.failureNotifiedTime > 3600):
+            logger.info("Connection to bridge controller appears to have failed, connectionLostCount: %s", str(connectionLostCount))
             alert = nicetime(time.time()) + ": production server appears to have failed"
             subject = alert
             reactor.callInThread(sendMail, config["email2"], subject, alert)
-            self.failureNotified = True
+            self.failureNotifiedTime = now
 
 if __name__ == '__main__':
     readConfig(True)
