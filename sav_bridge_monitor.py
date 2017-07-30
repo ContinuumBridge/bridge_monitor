@@ -29,19 +29,18 @@ from twisted.internet import reactor, defer
 from twisted.internet import task
 from twisted.internet.protocol import ReconnectingClientFactory
 
-config                      = {}
-bridges                     = []
-connectionLostCount         = 0
-HOME                        = os.getcwd()
-CONFIG_FILE                 = HOME + "/bridge_monitor.config"
-CB_LOGFILE                  = HOME + "/monitor.log"
-CB_ADDRESS                  = "portal.continuumbridge.com"
-CB_LOGGING_LEVEL            = "DEBUG"
-CONFIG_READ_INTERVAL        = 10.0
-WATCHDOG_TIME               = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
-BRIDGE_DEAD_TIME            = 60 * 60 * 4 # Presume dead if not back in this time. Must be greater than WATCHDOG_TIME
-MONITOR_INTERVAL            = 30          # How often to run watchdog code
-
+config                = {}
+bridges               = []
+HOME                  = os.path.expanduser("~")
+CONFIG_FILE           = HOME + "/bridge_monitor/bridge_monitor.config"
+CB_LOGFILE            = HOME + "/bridge_monitor/monitor.log"
+CB_ADDRESS            = "portal.continuumbridge.com"
+CB_LOGGING_LEVEL      = "DEBUG"
+CONFIG_READ_INTERVAL  = 10.0
+WATCHDOG_TIME         = 60 * 65     # If not heard about a bridge for this time, consider it disconnected
+BRIDGE_DEAD_TIME      = 60 * 60 * 3 # Presume dead if not back in this time
+MONITOR_INTERVAL      = 30          # How often to run watchdog code
+ 
 logger = logging.getLogger('Logger')
 logger.setLevel(CB_LOGGING_LEVEL)
 handler = logging.handlers.RotatingFileHandler(CB_LOGFILE, maxBytes=10000000, backupCount=5)
@@ -180,9 +179,7 @@ class ClientWSFactory(ReconnectingClientFactory, WebSocketClientFactory):
         ReconnectingClientFactory.resetDelay
 
     def clientConnectionLost(self, connector, reason):
-        global connectionLostCount
         logger.debug('Lost connection. Reason: %s', reason)
-        connectionLostCount += 1
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
     def clientConnectionFailed(self, connector, reason):
@@ -190,14 +187,11 @@ class ClientWSFactory(ReconnectingClientFactory, WebSocketClientFactory):
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
 
 class ClientWSProtocol(WebSocketClientProtocol):
-    global connectionLostCount
     def __init__(self):
         logger.debug("Connection __init__")
         signal.signal(signal.SIGINT, self.signalHandler)  # For catching SIGINT
         signal.signal(signal.SIGTERM, self.signalHandler)  # For catching SIGTERM
         self.stopping = False
-        connectionLostCount = 0
-        self.failureNotifiedTime = 0
         l = task.LoopingCall(self.monitor)
         l.start(MONITOR_INTERVAL)
 
@@ -211,8 +205,6 @@ class ClientWSProtocol(WebSocketClientProtocol):
 
     def onConnect(self, response):
         logger.debug("Server connected: %s", str(response.peer))
-        global connectionLostCount
-        connectionLostCount = 0
 
     def onOpen(self):
         logger.debug("WebSocket connection open.")
@@ -242,17 +234,6 @@ class ClientWSProtocol(WebSocketClientProtocol):
             found = False
             for b in bridges:
                 if msg["source"] == b["name"]:
-                    #MS 
-                    if b["active"] == "dead":
-                        name =  b["name"].split('/')[0]
-                        logger.info("%s has come back", name)
-                        alert = name + " has come back at " + nicetime(time.time())
-                        subject = name + " has come back to life"
-                        reactor.callInThread(sendMail, config["email1"], subject, alert)
-                    ## Alteratively, it'd be cleaner to do all the mailing from monitor below.
-                    ## In which case set b["active"] to "phoenix" here and "new" under not found 
-                    ## for one pass only. Thereafter True - this would have to be set in monitor when 
-                    ## mail is sent otherwise we'd get mails every MONITOR_INTERVAL 'til the next msg
                     b["active"] = True,
                     b["time"] = time.time()
                     if "version" in msg["body"]:
@@ -272,7 +253,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
                     else:
                         b["connection"] = "not reported"
                     found = True
-                    logger.info("%s. %s. Apps up since: %s, uptime: %s, conn: %s", msg["source"].split('/')[0], \
+                    logger.info("Message from bridge: %s. Version: %s. Up since: %s, uptime: %s, connection: %s", msg["source"].split('/')[0], \
                         b["version"], "not reported" if b["up_since"] == -1 else nicetime(b["up_since"]), b["uptime"], b["connection"]) 
                     break
             if not found:
@@ -283,13 +264,7 @@ class ClientWSProtocol(WebSocketClientProtocol):
                     "version": msg["body"]["version"] if "version" in msg["body"] else "not reported",
                     "up_since": msg["body"]["up_since"] if "up_since" in msg["body"] else -1 
                 })
-                #MS
-                name =  msg["source"].split('/')[0]
-                alert = "New bridge " + name + " came online at " + nicetime(time.time())
-                subject = "New bridge:" + name
-                reactor.callInThread(sendMail, config["email1"], subject, alert)
-
-                logger.info("New: %s. %s. Apps up since: %s", msg["source"].split('/')[0], bridges[-1]["version"], \
+                logger.info("New bridge: %s. Version: %s. Up since: %s", msg["source"].split('/')[0], bridges[-1]["version"], \
                     "not reported" if bridges[-1]["up_since"] == -1 else nicetime(bridges[-1]["up_since"]))
             ack = {
                     "source": config["cid"],
@@ -301,30 +276,22 @@ class ClientWSProtocol(WebSocketClientProtocol):
             reactor.callInThread(self.sendAck, ack)
 
     def monitor(self):
-        now = time.time()
         if bridges:
+            now = time.time()
             for b in bridges:
                 if now - b["time"] > BRIDGE_DEAD_TIME:
-                    if b["active"] == False: # i.e. it's in bridges & hasn't come back or been marked dead yet.
-                        b["active"] = "dead"
+                    if b["active"] == False: # i.e. it's still in bridges & hasn't come back yet. Need a "dead" state...
                         name =  b["name"].split('/')[0]
-                        logger.info("Marking %s. as dead", name)
                         alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
-                        subject = name + " seems to be dead"
-                        reactor.callInThread(sendMail, config["email1"], subject, alert)
+                        subject = "Bridge " + name + " seems to be dead"
+                        reactor.callInThread(sendMail, config["email"], subject, alert)
                 elif now - b["time"] > WATCHDOG_TIME:
                     if b["active"]:
                         b["active"] = False
                         name =  b["name"].split('/')[0]
                         alert = "Not heard from bridge " + name + " since " + nicetime(b["time"])
                         subject = "Alert for Bridge " + name
-                        reactor.callInThread(sendMail, config["email1"], subject, alert)
-        if connectionLostCount > 3 and not (now - self.failureNotifiedTime > 3600):
-            logger.info("Connection to bridge controller appears to have failed, connectionLostCount: %s", str(connectionLostCount))
-            alert = nicetime(time.time()) + ": production server appears to have failed"
-            subject = alert
-            reactor.callInThread(sendMail, config["email2"], subject, alert)
-            self.failureNotifiedTime = now
+                        reactor.callInThread(sendMail, config["email"], subject, alert)
 
 if __name__ == '__main__':
     readConfig(True)
